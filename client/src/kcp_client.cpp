@@ -22,7 +22,6 @@ namespace KCP
 KcpClient::KcpClient(const std::string& ip, const int port) {
     server_ip_ = ip, server_port_ = port;
     initUdpConnect();
-    is_connected_ = true;
 }
 
 KcpClient::~KcpClient() {
@@ -34,8 +33,8 @@ void KcpClient::set_event_callback(const client_event_callback_t& event_callback
     pevent_func_val_ = val;
 }
 
-int KcpClient::connect() {
-    if (is_connected_ && is_in_kcp_) { return SUCCESS; };
+int KcpClient::run() {
+    if (running_) { return SUCCESS; };
     
     std::promise<int> prom;
     std::future<int> fut = prom.get_future();
@@ -59,15 +58,25 @@ int KcpClient::connect() {
     }
     
     start();
+
+    std::function<void()> update_task([this] {this->updateInLoop();});
+    thread_[0] = std::thread(std::move(update_task));
+
+    std::function<void()> run_task([this] {this->recvInLoop();});
+    thread_[1] = std::thread(std::move(run_task));
+
     std::cout << "connect success!" << std::endl;
     return SUCCESS;
 }
 
-void KcpClient::sendMsg(const std::string& msg) {
+void KcpClient::send(const std::string& msg) {
     std::cout << "send msg: " << msg << std::endl;
-    int ret = ikcp_send(kcp_, msg.c_str(), msg.size());
-    if (ret < 0) {
-        std::cerr << "ikcp_send error return with errno: " << ret << std::endl; 
+    {
+        std::unique_lock<std::mutex> lock(kcp_mtx_);
+        int ret = ikcp_send(kcp_, msg.c_str(), msg.size());
+        if (ret < 0) {
+            std::cerr << "ikcp_send error return with errno: " << ret << std::endl; 
+        }
     }
 }
 
@@ -76,9 +85,11 @@ void KcpClient::updateInLoop() {
 
     auto last = std::chrono::system_clock::now();
 
-    while (is_connected_ && is_in_kcp_) {
+    while (running_) {
         auto current = std::chrono::system_clock::now();
         if (std::chrono::duration_cast<std::chrono::milliseconds>(current-last).count() >= KCP_UPDATE_INTERVAL || (current < last)) {
+            std::unique_lock<std::mutex> lock(kcp_mtx_);
+            if (!kcp_) return;
             ikcp_update(kcp_, current.time_since_epoch().count());
             last = current;
         }
@@ -87,20 +98,13 @@ void KcpClient::updateInLoop() {
     std::cout << "thread_update exit." << std::endl;
 }
 
-void KcpClient::run() {
-    if (!is_connected_ && !is_in_kcp_) {
-        return;
-    }
-
-    std::cout << "thread_run start: " << std::this_thread::get_id() << std::endl;
-
-    std::function<void()> update_task([this] {this->updateInLoop();});
-    thread_ = std::thread(std::move(update_task));
+void KcpClient::recvInLoop() {
+    std::cout << "thread_recvInLoop start: " << std::this_thread::get_id() << std::endl;
 
     setNonblock();
     
     char buffer[MAX_MSG_SIZE]{};
-    while (is_connected_ && is_in_kcp_){
+    while (running_){
         try {
             const ssize_t len = ::recv(sock_fd_, buffer, sizeof(buffer), 0);
             if (len > 0) {
@@ -116,21 +120,28 @@ void KcpClient::run() {
         }
     }
 
-    std::cout << "thread_run exit." << std::endl;
+    std::cout << "thread_recvInLoop exit." << std::endl;
 }
 
 void KcpClient::exit() {
     stop();
+    // wait for thread exit normally.
+    for (int i = 0; i < 2; ++i)
+        if(thread_[i].joinable()) 
+            thread_[i].join();
+
+    {
+        std::unique_lock<std::mutex> lock(kcp_mtx_);
+        if (kcp_) {
+            ::ikcp_release(kcp_);
+            kcp_ = nullptr;
+        }        
+    }
+
     if (sock_fd_) {
         ::close(sock_fd_);
         sock_fd_ = 0;
     }
-    if (kcp_) {
-        ::ikcp_release(kcp_);
-        kcp_ = nullptr;
-    }
-    if(thread_.joinable()) 
-        thread_.join();
 }
 
 void KcpClient::requireKcpConv() {
@@ -173,34 +184,29 @@ void KcpClient::transferKcp(std::promise<int>& prom) {
 }
 
 void KcpClient::start() {
-    is_in_kcp_ = true;
+    running_ = true;
 }
 
 void KcpClient::stop() {
-    is_connected_ = false;
-    is_in_kcp_ = false;
-}
-
-int KcpClient::initKcp(unsigned int conv) {
-    kcp_ = ikcp_create(conv, (void*)this);
-    if (!kcp_) {
-        return KCP_ERR_CREATE_KCPCB_FAILED;
-    }
-    ikcp_nodelay(kcp_, 1, KCP_UPDATE_INTERVAL, 2, 1);
-    kcp_->output = kcpOutput;
-
-    return SUCCESS;
+    running_ = false;
 }
 
 void KcpClient::processMsg(const std::string& recv_buffer) {
-    ikcp_input(kcp_, recv_buffer.c_str(), recv_buffer.length());
-
-    while(true) {
-        char buf[MAX_MSG_SIZE] = "";
-        int len = ikcp_recv(kcp_, buf, sizeof(buf));
-        if (len < 0) return;
-        
-        std::string msg(buf, len);
+    {    
+        std::unique_lock<std::mutex> lock(kcp_mtx_);
+        ikcp_input(kcp_, recv_buffer.c_str(), recv_buffer.length());
+    }
+    while (true) {
+        char buffer[MAX_MSG_SIZE]{};
+        int len = 0;
+        {
+            std::unique_lock<std::mutex> lock(kcp_mtx_);
+            len = ikcp_recv(kcp_, buffer, sizeof(buffer));
+        }
+        if (len < 0) {
+            break;
+        }
+        std::string msg(buffer, len);
         std::cout << "recv kcp msg: " << msg << std::endl;
         if (pevent_func_) {
             pevent_func_(kcp_->conv, eRecvMsg, msg, pevent_func_val_);
@@ -250,6 +256,17 @@ void KcpClient::setNonblock() {
             std::cerr << "fcntl setfl failed with errno " << errno << " " << strerror(errno) << std::endl;
         }
     }
+}
+
+int KcpClient::initKcp(unsigned int conv) {
+    kcp_ = ikcp_create(conv, (void*)this);
+    if (!kcp_) {
+        return KCP_ERR_CREATE_KCPCB_FAILED;
+    }
+    ikcp_nodelay(kcp_, 1, KCP_UPDATE_INTERVAL, 2, 1);
+    kcp_->output = kcpOutput;
+
+    return SUCCESS;
 }
 
 int KcpClient::kcpOutput(const char *buf, int len, ikcpcb* kcp, void *user) {
