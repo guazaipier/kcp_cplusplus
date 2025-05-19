@@ -72,7 +72,7 @@ int KcpClient::run() {
 void KcpClient::send(const std::string& msg) {
     std::cout << "send msg: " << msg << std::endl;
     {
-        std::unique_lock<std::mutex> lock(kcp_mtx_);
+        std::lock_guard<std::mutex> lock(kcp_mtx_);
         int ret = ikcp_send(kcp_, msg.c_str(), msg.size());
         if (ret < 0) {
             std::cerr << "ikcp_send error return with errno: " << ret << std::endl; 
@@ -88,9 +88,11 @@ void KcpClient::updateInLoop() {
     while (running_) {
         auto current = std::chrono::system_clock::now();
         if (std::chrono::duration_cast<std::chrono::milliseconds>(current-last).count() >= KCP_UPDATE_INTERVAL || (current < last)) {
-            std::unique_lock<std::mutex> lock(kcp_mtx_);
-            if (!kcp_) return;
-            ikcp_update(kcp_, current.time_since_epoch().count());
+            {
+                std::lock_guard<std::mutex> lock(kcp_mtx_);
+                if (!kcp_) return;
+                ikcp_update(kcp_, current.time_since_epoch().count());
+            }
             last = current;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(1)); // sleep 1ms
@@ -131,7 +133,7 @@ void KcpClient::exit() {
             thread_[i].join();
 
     {
-        std::unique_lock<std::mutex> lock(kcp_mtx_);
+        std::lock_guard<std::mutex> lock(kcp_mtx_);
         if (kcp_) {
             ::ikcp_release(kcp_);
             kcp_ = nullptr;
@@ -193,14 +195,14 @@ void KcpClient::stop() {
 
 void KcpClient::processMsg(const std::string& recv_buffer) {
     {    
-        std::unique_lock<std::mutex> lock(kcp_mtx_);
+        std::lock_guard<std::mutex> lock(kcp_mtx_);
         ikcp_input(kcp_, recv_buffer.c_str(), recv_buffer.length());
     }
     while (true) {
         char buffer[MAX_MSG_SIZE]{};
         int len = 0;
         {
-            std::unique_lock<std::mutex> lock(kcp_mtx_);
+            std::lock_guard<std::mutex> lock(kcp_mtx_);
             len = ikcp_recv(kcp_, buffer, sizeof(buffer));
         }
         if (len < 0) {
