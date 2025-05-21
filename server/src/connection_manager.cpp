@@ -6,6 +6,7 @@
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <fcntl.h>
+#include <sys/epoll.h>
 
 // stream files
 #include <iostream>
@@ -26,10 +27,10 @@ void signalDisable() {
     signal(SIGPIPE, SIG_IGN);
 }
 
-connection_manager::connection_manager(const int port) {
+connection_manager::connection_manager(const int port) : connection_(std::make_unique<connection_container>()) {
     std::cout << "port: " << port << std::endl;
     initServer(port);
-    if (sockfd_ <= 0) return;
+    if (!sockfd_) return;
 
     {
         // 开启kcp缓冲区定时刷新
@@ -59,14 +60,40 @@ void connection_manager::run() {
     struct sockaddr_in addr{};
     socklen_t addr_len = sizeof(addr);
     while (!stopped_) {
-        recv_len = ::recvfrom(sockfd_, recv_data, sizeof(recv_data), 0, (struct sockaddr*)&addr, &addr_len);
-        if (recv_len > 0) {
-            std::pair<std::string, struct sockaddr_in> msg(std::string(recv_data, recv_len), addr);
-            std::unique_lock<std::mutex> msg_lock(mtx_);
-            recv_que_.push(msg);
-            cv_.notify_one();
+        epoll_event events[SOMAXCONN];
+        int nfds = epoll_wait(epoll_fd_, events, SOMAXCONN, -1);
+        if (nfds == -1) {
+            if (errno == EINTR) {
+                std::cout << "epoll_wait interrupted by signal" << std::endl; // gdb ctrl+c
+                continue;
+            } else {
+                std::cout << "epoll_wait error" << std::endl;
+                break;
+            }
+        } else {
+            for (int i = 0; i < nfds; ++i) {
+                if (events[i].data.fd == sockfd_) {
+                    recv_len = ::recvfrom(sockfd_, recv_data, sizeof(recv_data), 0, (struct sockaddr*)&addr, &addr_len);
+                    if (recv_len > 0) {
+                        std::pair<std::string, struct sockaddr_in> msg(std::string(recv_data, recv_len), addr);
+                        std::unique_lock<std::mutex> msg_lock(mtx_);
+                        recv_que_.push(msg);
+                        cv_.notify_one();
+                    }
+                }
+            }
         }
     }
+
+    // while (!stopped_) {
+    //     recv_len = ::recvfrom(sockfd_, recv_data, sizeof(recv_data), 0, (struct sockaddr*)&addr, &addr_len);
+    //     if (recv_len > 0) {
+    //         std::pair<std::string, struct sockaddr_in> msg(std::string(recv_data, recv_len), addr);
+    //         std::unique_lock<std::mutex> msg_lock(mtx_);
+    //         recv_que_.push(msg);
+    //         cv_.notify_one();
+    //     }
+    // }
     std::cout << "run exit." << std::endl;
 }
 
@@ -74,7 +101,7 @@ void connection_manager::run() {
 void connection_manager::stop() {
     std::cout << "kcp_stop start: " << std::endl;
     stopped_.store(true);
-    connection_.stop();
+    connection_->stop();
     if (sockfd_ > 0) {
         ::close(sockfd_);
         sockfd_ = 0;
@@ -91,13 +118,13 @@ void connection_manager::stop() {
 void connection_manager::forceDisconnect(const uint32_t& conv) {
     std::cout << "force disconnect: " << conv << std::endl;
 
-    if (!connection_.findByConv(conv))
+    if (!connection_->findByConv(conv))
         return;
     
     std::shared_ptr<std::string> msg(new std::string("server force disconnect"));
     callCallBack(conv, eEventType::eDisconnect, msg);
 
-    connection_.removeConnection(conv);
+   connection_->removeConnection(conv);
 }
 
 void connection_manager::setCallback(const std::function<event_callback_t>& func) {
@@ -106,7 +133,7 @@ void connection_manager::setCallback(const std::function<event_callback_t>& func
 
 // send by kcp
 int connection_manager::send(const uint32_t& conv, std::shared_ptr<std::string> msg) {
-    std::shared_ptr<KCP::connection> conn = connection_.findByConv(conv);
+    std::shared_ptr<KCP::connection> conn =connection_->findByConv(conv);
     if (!conn)
         return KCP_ERR_NOT_EXIST_CONNECTION;
     
@@ -156,7 +183,7 @@ void connection_manager::update() {
     while (!stopped_) {
         auto current = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
         cur_clock_.store(current);
-        connection_.update(current);
+        connection_->update(current);
         std::this_thread::sleep_for(std::chrono::milliseconds(KCP_UPDATE_INTERVAL));
     }
     
@@ -165,7 +192,7 @@ void connection_manager::update() {
 
             
 void connection_manager::processConnection(struct sockaddr_in* addr) {
-    uint32_t conv = connection_.getNewConv();
+    uint32_t conv = connection_->getNewConv();
     std::string send_back_msg = GenerateSendBackConvMsg(conv);
     int ret = ::sendto(sockfd_, send_back_msg.c_str(), send_back_msg.length(), 0, (struct sockaddr*)addr, sizeof(*addr));
     if (ret < 0) {
@@ -173,7 +200,7 @@ void connection_manager::processConnection(struct sockaddr_in* addr) {
         return;
     }
     std::cout << "send: " << send_back_msg << " addr: " << inet_ntoa(addr->sin_addr)<< ":" << ntohs(addr->sin_port) << std::endl;
-    connection_.addConnection(shared_from_this(), conv, addr);
+    connection_->addConnection(shared_from_this(), conv, addr);
 }
 
 void connection_manager::processKcpMsg(std::string recv_msg) {
@@ -181,7 +208,7 @@ void connection_manager::processKcpMsg(std::string recv_msg) {
     // ikcp_send_msg_check(recv_msg.c_str(), recv_msg.length());
     uint32_t conv = ikcp_getconv(recv_msg.c_str());
     // std::cout << "get_conv: " << conv << std::endl;
-    auto conn = connection_.findByConv(conv);
+    auto conn = connection_->findByConv(conv);
     if (!conn) {
         std::cout <<  "connection not exist with conv: " << conv << std::endl;
         return;
@@ -191,6 +218,7 @@ void connection_manager::processKcpMsg(std::string recv_msg) {
 }
 
 void connection_manager::initServer(const int& port) {
+    // create socket
     {
         sockfd_ = socket(AF_INET, SOCK_DGRAM, 0);
         if (sockfd_ <= 0) { 
@@ -198,26 +226,67 @@ void connection_manager::initServer(const int& port) {
             return; 
         }
     }
+    // nonblock
     {
         int flags = fcntl(sockfd_, F_GETFL, 0);
         if (flags == -1) {
             std::cerr << "get socket non-blocking: fcntl error return with errno: " << errno << " " << strerror(errno) << std::endl;
+            ::close(sockfd_);
+            sockfd_ = 0;
             return;
         }
         if(fcntl(sockfd_, F_SETFL, flags | O_NONBLOCK) == -1) {
             std::cerr << "set socket non-blocking: fcntl error return with errno: " << errno << " " << strerror(errno) << std::endl;
+            ::close(sockfd_);
+            sockfd_ = 0;
             return;
         }
     }
+    // set addr reuse
+    {
+        int on = 1;
+        if (::setsockopt(sockfd_, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on)) == -1) {
+            std::cerr << "set socket reuse addr failed with errno " << errno << " " << strerror(errno) << std::endl;
+            ::close(sockfd_);
+            sockfd_ = 0;
+            return;
+        }
+        if (::setsockopt(sockfd_, SOL_SOCKET, SO_REUSEPORT, &on, sizeof(on)) == -1) {
+            std::cerr << "set socket reuse port failed with errno " << errno << " " << strerror(errno) << std::endl;
+            ::close(sockfd_);
+            sockfd_ = 0;
+            return;
+        }
+    }
+    // bind addr
     {
         struct sockaddr_in addr{};
         addr.sin_family = AF_INET;
         addr.sin_port = htons(port);
         addr.sin_addr.s_addr = htonl(INADDR_ANY);
-        int ret = ::bind(sockfd_, (struct sockaddr*)&addr,sizeof(addr));
-        if (ret < 0) {
+        if (::bind(sockfd_, (struct sockaddr*)&addr,sizeof(addr)) == -1) {
             std::cerr << "bind addr failed with errno " << errno << " " << strerror(errno) << std::endl;
-            exit(ret);
+            ::close(sockfd_);
+            sockfd_ = 0;
+            return;
+        }
+    }
+    // set epoll
+    {
+        epoll_fd_ = epoll_create(1);
+        if (epoll_fd_ == -1) {
+            std::cerr << "create epoll failed with errno " << errno << " " << strerror(errno) << std::endl;
+            ::close(sockfd_);
+            sockfd_ = 0;
+            return;
+        }
+        epoll_event event{};
+        event.events = EPOLLIN;
+        event.data.fd = sockfd_;
+        if (::epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, sockfd_, &event) == -1) {
+            std::cerr << "add epoll failed with errno " << errno << " " << strerror(errno) << std::endl;
+            ::close(sockfd_);
+            sockfd_ = 0;
         }
     }
 }

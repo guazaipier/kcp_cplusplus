@@ -1,7 +1,6 @@
 #pragma once
 
 #include "util.hpp"
-#include "connection_container.hpp"
 
 #include <functional>
 #include <thread>
@@ -13,14 +12,19 @@
 
 namespace KCP {
 
+class connection_container;
+
 class connection_manager : public std::enable_shared_from_this<connection_manager> {
 public:
     connection_manager(const int port);
     ~connection_manager();
 
+    // 创建完实例后，先调用这个函数，确定 sockfd 是否可用
+    // user call this function to check server is ready or not
+    bool prepared() const { return sockfd_; }
+    // user call this function to run server
     void run();
-
-    // stop
+    // user call this function to stop server
     void stop();
 
     // timeout to disconnect client.
@@ -55,12 +59,13 @@ private:
     std::function<event_callback_t> event_callback;
 
     int sockfd_{0};
+    int epoll_fd_{0};
 
     std::queue<std::pair<std::string, struct sockaddr_in>> recv_que_;
     std::mutex mtx_;
     std::condition_variable cv_;
 
-    connection_container connection_;
+    std::unique_ptr<connection_container> connection_;
 };
 
 };

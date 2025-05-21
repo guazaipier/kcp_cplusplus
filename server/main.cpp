@@ -21,6 +21,10 @@ int main(int argc, char* argv[]) {
         // int port = atoi(argv[2]);
         
         std::shared_ptr<KCP::connection_manager> server(std::make_shared<KCP::connection_manager>(12345));
+        if (!server->prepared()) { 
+            std::cout << "server prepare failed." << std::endl; 
+            return -1;
+        }
         server->setCallback([&server](uint32_t conv, KCP::eEventType etype, std::shared_ptr<std::string> msg) {
             std::cout << "recv msg: " << etype << " " << msg->c_str() << std::endl;
             if (etype == KCP::eRecvMsg) {
