@@ -74,7 +74,7 @@ void connection_manager::run() {
             for (int i = 0; i < nfds; ++i) {
                 if (events[i].data.fd == sockfd_) {
                     while (true) { // et 模式必须一次性读完，防止丢包
-                        std::vector<char> recv_data(MAX_MSG_SIZE, '\0');
+                        std::vector<char> recv_data(MAX_KCP_MSG_SIZE, '\0');
                         int recv_len = ::recvfrom(sockfd_, recv_data.data(), recv_data.size(), 0, (struct sockaddr*)&addr, &addr_len);
                         if (recv_len > 0) {
                             std::pair<std::string, struct sockaddr_in> msg(std::string(recv_data.data(), recv_len), addr);

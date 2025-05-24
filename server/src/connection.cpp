@@ -30,11 +30,18 @@ std::shared_ptr<connection> connection::create(const std::weak_ptr<connection_ma
 void connection::input(const std::string& msg) {
     last_recv_msg_clock_ = getCurClock();
 
-    ikcp_input(kcp_, msg.c_str(), msg.length());
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        ikcp_input(kcp_, msg.c_str(), msg.length());        
+    }
 
     {
-        char buffer[1024*1000]{};
-        int rcv_len = ikcp_recv(kcp_, buffer, sizeof(buffer));
+        char buffer[MAX_MSG_SIZE]{};
+        int rcv_len = 0;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            rcv_len = ikcp_recv(kcp_, buffer, sizeof(buffer));
+        }
         if (rcv_len <= 0) {
             // std::cout << "kcp_recv_len" << rcv_len << " <= 0" << std::endl;
         } else {
@@ -47,6 +54,7 @@ void connection::input(const std::string& msg) {
 }
 
 void connection::send(const std::string& msg) {
+    std::lock_guard<std::mutex> lock(mutex_);
     int ret = ikcp_send(kcp_, msg.c_str(), msg.length());
     if (ret < 0) {
         std::cout << "send ret < 0: " << ret << std::endl;
@@ -54,6 +62,7 @@ void connection::send(const std::string& msg) {
 }
 
 void connection::update(uint32_t clock) {
+    std::lock_guard<std::mutex> lock(mutex_);
     ikcp_update(kcp_, clock);
 }
 

@@ -41,11 +41,6 @@ std::shared_ptr<connection> connection_container::addConnection(std::weak_ptr<co
     if (conn) {
         connections_[conv] = conn;
         std::cout << "add connection conv: " << conv << std::endl;
-        // std::cout << "exist conv lists: " << std::endl;
-        // for (const auto& c : connections_) {
-        //     std::cout << "conv: " << c.first << " ";
-        // }
-        // std::cout << std::endl;
     }
     return conn;
 }

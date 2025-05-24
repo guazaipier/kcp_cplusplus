@@ -2,6 +2,7 @@
 
 #include "util.hpp"
 #include <chrono>
+#include <mutex>
 
 namespace KCP {
 
@@ -34,6 +35,7 @@ private:
     std::weak_ptr<connection_manager> connection_manager_;  // 通过上层的弱引用使用socket功能
     struct sockaddr_in addr_{};
     ikcpcb* kcp_{nullptr};
+    std::mutex mutex_;
     uint32_t conv_{0};                 // kcp的conv头部
     uint32_t last_recv_msg_clock_{0};   // 用于计算客户端是否已经超时关闭
 };
