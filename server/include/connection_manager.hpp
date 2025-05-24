@@ -45,7 +45,7 @@ private:
     void update();
 
     void processConnection(struct sockaddr_in*);
-    void processKcpMsg(std::string recv_msg);
+    void processKcpMsg(const std::string& recv_msg);
 
 private:
     void initServer(const int& port);

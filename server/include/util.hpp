@@ -10,7 +10,8 @@ typedef unsigned int uint32_t;
 
 // kcp 发送最低时间间隔
 const int KCP_UPDATE_INTERVAL{5}; // ms
-const int MAX_MSG_SIZE{1024 * 10}; // 10KB
+// const int MAX_MSG_SIZE{(1 << 16) - 20 - 8}; // 理论上最大的udp包 64k 实际能发送的最大长度受 MTU 限制，超出部分分片，分片亦造成丢包，需要重传整个包，效率低下
+const int MAX_MSG_SIZE{(1 << 12) - 6}; // 超过 kcp 内部分片 本机测max_packet_size=4090
 const uint32_t IKCP_OVERHEAD{24};
 const uint32_t KCP_CONNECTION_TIMEOUT_DEADLINE{1000*60}; //10s
 

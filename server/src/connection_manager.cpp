@@ -61,7 +61,7 @@ void connection_manager::run() {
     socklen_t addr_len = sizeof(addr);
     while (!stopped_) {
         epoll_event events[SOMAXCONN];
-        int nfds = epoll_wait(epoll_fd_, events, SOMAXCONN, -1);
+        int nfds = epoll_wait(epoll_fd_, events, SOMAXCONN, 10);
         if (nfds == -1) {
             if (errno == EINTR) {
                 std::cout << "epoll_wait interrupted by signal" << std::endl; // gdb ctrl+c
@@ -70,6 +70,8 @@ void connection_manager::run() {
                 std::cout << "epoll_wait error" << std::endl;
                 break;
             }
+        } else if (nfds == 0) {
+            continue; //timeout todo something not busy
         } else {
             for (int i = 0; i < nfds; ++i) {
                 if (events[i].data.fd == sockfd_) {
@@ -171,7 +173,7 @@ void connection_manager::recv() {
             if (0 == isRequireConnect(recv_msg.first.c_str(), recv_msg.first.length()))
                 processConnection(&(recv_msg.second));
             else 
-                processKcpMsg(recv_msg.first);
+                processKcpMsg(recv_msg.first); // TODO: working thread pool to handle kcp msg.
         }
     }
     
@@ -203,7 +205,7 @@ void connection_manager::processConnection(struct sockaddr_in* addr) {
     connection_->addConnection(shared_from_this(), conv, addr);
 }
 
-void connection_manager::processKcpMsg(std::string recv_msg) {
+void connection_manager::processKcpMsg(const std::string& recv_msg) {
     std::cout << "recv msg len: " << recv_msg.length() << " " << recv_msg.c_str() + IKCP_OVERHEAD << std::endl;
     // ikcp_send_msg_check(recv_msg.c_str(), recv_msg.length());
     uint32_t conv = ikcp_getconv(recv_msg.c_str());
@@ -281,7 +283,7 @@ void connection_manager::initServer(const int& port) {
             return;
         }
         epoll_event event{};
-        event.events = EPOLLIN;
+        event.events = EPOLLIN | EPOLLET;
         event.data.fd = sockfd_;
         if (::epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, sockfd_, &event) == -1) {
             std::cerr << "add epoll failed with errno " << errno << " " << strerror(errno) << std::endl;
