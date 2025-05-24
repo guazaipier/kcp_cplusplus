@@ -54,9 +54,7 @@ connection_manager::~connection_manager() {
 }
 
 void connection_manager::run() {
-    std::cout << "kcp server start running..." << std::endl;    
-    char recv_data[MAX_MSG_SIZE];
-    int recv_len;
+    std::cout << "kcp server start running..." << std::endl;
     struct sockaddr_in addr{};
     socklen_t addr_len = sizeof(addr);
     while (!stopped_) {
@@ -75,13 +73,19 @@ void connection_manager::run() {
         } else {
             for (int i = 0; i < nfds; ++i) {
                 if (events[i].data.fd == sockfd_) {
-                    recv_len = ::recvfrom(sockfd_, recv_data, sizeof(recv_data), 0, (struct sockaddr*)&addr, &addr_len);
-                    if (recv_len > 0) {
-                        std::pair<std::string, struct sockaddr_in> msg(std::string(recv_data, recv_len), addr);
-                        std::unique_lock<std::mutex> msg_lock(mtx_);
-                        recv_que_.push(msg);
-                        cv_.notify_one();
+                    while (true) { // et 模式必须一次性读完，防止丢包
+                        std::vector<char> recv_data(MAX_MSG_SIZE, '\0');
+                        int recv_len = ::recvfrom(sockfd_, recv_data.data(), recv_data.size(), 0, (struct sockaddr*)&addr, &addr_len);
+                        if (recv_len > 0) {
+                            std::pair<std::string, struct sockaddr_in> msg(std::string(recv_data.data(), recv_len), addr);
+                            std::unique_lock<std::mutex> msg_lock(mtx_);
+                            recv_que_.push(msg);
+                            cv_.notify_one();
+                        } else if (recv_len == 0) {
+                            break;
+                        }
                     }
+
                 }
             }
         }
