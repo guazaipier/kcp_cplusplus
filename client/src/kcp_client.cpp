@@ -14,26 +14,107 @@
 #include <sstream>
 #include <future>
 #include <exception>
+#include <mutex>
+#include <atomic>
 
 #include "ikcp.h"
 
-namespace KCP
-{
+namespace KCP {
+
+#define SESSION KcpClient::Session
+
+class SESSION {
+public:
+    Session(const std::string& ip, const int port);
+    ~Session();
+
+    // 设置上层回调，进行事件通知
+    void set_event_callback(const client_event_callback_t& event_callback_func, void* var);
+    int connect();
+    void send(const std::string& msg);
+    void exit();
+
+private:   
+    void requireKcpConv();
+    // 开启kcp
+    void transferKcp(std::promise<int>& prom);
+    void start();
+    void stop();
+    // 发送客户端数据
+    void updateInLoop();
+    // 接收数据
+    void recvInLoop();
+    // 处理从服务端接收到的消息，剔除kcp头部，解析出来的消息通过事件回调给上层
+    void processMsg(const std::string& msg);
+    
+    // 初始化套接字
+    int initUdpConnect();
+    // 设置非阻塞套接字，方便正常退出run
+    void setNonblock();
+            
+    // 初始化kcp
+    int initKcp(unsigned int conv);
+    // kcp内部用于发送数据的函数
+    static int kcpOutput(const char *buf, int len, ikcpcb* kcp, void *user);   
+
+private:
+    int sock_fd_{-1};
+    std::string server_ip_;
+    int server_port_;
+
+    ikcpcb* kcp_{};
+    std::mutex kcp_mtx_;
+    
+    std::atomic_bool running_{false};
+    std::thread thread_[2];
+
+    // 事件通知上层的回调函数
+    client_event_callback_t* pevent_func_{};
+    void* pevent_func_val_{};
+};
+
 KcpClient::KcpClient(const std::string& ip, const int port) {
-    server_ip_ = ip, server_port_ = port;
-    initUdpConnect();
+    session_ = std::make_unique<Session>(ip, port);
 }
 
 KcpClient::~KcpClient() {
-    exit();
+    session_->exit();
 }
 
 void KcpClient::set_event_callback(const client_event_callback_t& event_callback_func, void* val) {
+    session_->set_event_callback(event_callback_func, val);
+}
+
+int KcpClient::connect() {
+    return session_->connect();
+}
+
+void KcpClient::exit() {
+    session_->exit();
+}
+
+void KcpClient::send(const std::string& msg) {
+    session_->send(msg);
+}
+
+/////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////
+
+SESSION::Session(const std::string& ip, const int port) : server_ip_(ip), server_port_(port) {
+    initUdpConnect();
+}
+
+SESSION::~Session() {
+    if (running_)
+        exit();
+}
+
+void SESSION::set_event_callback(const client_event_callback_t& event_callback_func, void* val) {
     pevent_func_ = &event_callback_func;
     pevent_func_val_ = val;
 }
 
-int KcpClient::run() {
+int SESSION::connect() {
     if (running_) { return SUCCESS; };
     
     std::promise<int> prom;
@@ -69,7 +150,7 @@ int KcpClient::run() {
     return SUCCESS;
 }
 
-void KcpClient::send(const std::string& msg) {
+void SESSION::send(const std::string& msg) {
     std::cout << "send msg: " << msg << std::endl;
     {
         std::lock_guard<std::mutex> lock(kcp_mtx_);
@@ -80,7 +161,29 @@ void KcpClient::send(const std::string& msg) {
     }
 }
 
-void KcpClient::updateInLoop() {
+void SESSION::exit() {
+    if (!running_) return;
+    stop();
+    // wait for thread exit normally.
+    for (int i = 0; i < 2; ++i)
+        if(thread_[i].joinable()) 
+            thread_[i].join();
+
+    {
+        std::lock_guard<std::mutex> lock(kcp_mtx_);
+        if (kcp_) {
+            ::ikcp_release(kcp_);
+            kcp_ = nullptr;
+        }        
+    }
+
+    if (sock_fd_) {
+        ::close(sock_fd_);
+        sock_fd_ = 0;
+    }
+}
+
+void SESSION::updateInLoop() {
     std::cout << "thread_update start: " << std::this_thread::get_id() << std::endl;
 
     auto last = std::chrono::system_clock::now();
@@ -100,7 +203,7 @@ void KcpClient::updateInLoop() {
     std::cout << "thread_update exit." << std::endl;
 }
 
-void KcpClient::recvInLoop() {
+void SESSION::recvInLoop() {
     std::cout << "thread_recvInLoop start: " << std::this_thread::get_id() << std::endl;
 
     setNonblock();
@@ -125,28 +228,7 @@ void KcpClient::recvInLoop() {
     std::cout << "thread_recvInLoop exit." << std::endl;
 }
 
-void KcpClient::exit() {
-    stop();
-    // wait for thread exit normally.
-    for (int i = 0; i < 2; ++i)
-        if(thread_[i].joinable()) 
-            thread_[i].join();
-
-    {
-        std::lock_guard<std::mutex> lock(kcp_mtx_);
-        if (kcp_) {
-            ::ikcp_release(kcp_);
-            kcp_ = nullptr;
-        }        
-    }
-
-    if (sock_fd_) {
-        ::close(sock_fd_);
-        sock_fd_ = 0;
-    }
-}
-
-void KcpClient::requireKcpConv() {
+void SESSION::requireKcpConv() {
     std::cout << "send packet: " << KCP_CONNECT_PACKET << std::endl;
     const ssize_t ret = ::send(sock_fd_, KCP_CONNECT_PACKET.c_str(), KCP_CONNECT_PACKET.length(), 0);
     if (ret < 0) {
@@ -154,7 +236,7 @@ void KcpClient::requireKcpConv() {
     }
 }
 
-void KcpClient::transferKcp(std::promise<int>& prom) {
+void SESSION::transferKcp(std::promise<int>& prom) {
     std::cout << "wait for kcp conv back..." << std::endl;
     char buffer[1400]{};
 
@@ -185,15 +267,15 @@ void KcpClient::transferKcp(std::promise<int>& prom) {
     prom.set_value(SUCCESS);
 }
 
-void KcpClient::start() {
+void SESSION::start() {
     running_ = true;
 }
 
-void KcpClient::stop() {
+void SESSION::stop() {
     running_ = false;
 }
 
-void KcpClient::processMsg(const std::string& recv_buffer) {
+void SESSION::processMsg(const std::string& recv_buffer) {
     {    
         std::lock_guard<std::mutex> lock(kcp_mtx_);
         ikcp_input(kcp_, recv_buffer.c_str(), recv_buffer.length());
@@ -216,7 +298,7 @@ void KcpClient::processMsg(const std::string& recv_buffer) {
     }
 }
 
-int KcpClient::initUdpConnect() {
+int SESSION::initUdpConnect() {
     // 创建套接字
     {
         sock_fd_ = socket(AF_INET, SOCK_DGRAM, 0);
@@ -247,7 +329,7 @@ int KcpClient::initUdpConnect() {
     return SUCCESS;
 }
 
-void KcpClient::setNonblock() {
+void SESSION::setNonblock() {
     // 确保正常退出run中的::recv
     int flag = ::fcntl(sock_fd_, F_GETFL, 0);
     if (flag < 0) {
@@ -260,7 +342,7 @@ void KcpClient::setNonblock() {
     }
 }
 
-int KcpClient::initKcp(unsigned int conv) {
+int SESSION::initKcp(unsigned int conv) {
     kcp_ = ikcp_create(conv, (void*)this);
     if (!kcp_) {
         return KCP_ERR_CREATE_KCPCB_FAILED;
@@ -271,17 +353,14 @@ int KcpClient::initKcp(unsigned int conv) {
     return SUCCESS;
 }
 
-int KcpClient::kcpOutput(const char *buf, int len, ikcpcb* kcp, void *user) {
-    ssize_t ret = ::send(((KcpClient*)user)->sock_fd_, buf, len, 0);
+int SESSION::kcpOutput(const char *buf, int len, ikcpcb* kcp, void *user) {
+    ssize_t ret = ::send(((SESSION*)user)->sock_fd_, buf, len, 0);
     if (ret < 0) {
         std::cerr << "send error with errno: " << errno << " " << strerror(errno) << std::endl;
         return KCP_ERR_SEND_FAILED;
     }
-    
-
     // ikcp_send_msg_check(((KcpClient*)user)->kcp_, buf, len);
     // std::cout << "send msg: " << std::string(buf,len) << " len: " << len << std::endl;
-
     return 0;
 }
 

@@ -42,11 +42,11 @@ int main(int argc, char* argv[]) {
     KCP::KcpClient client(SERVER_IP, SERVER_PORT);
     client.set_event_callback(KCP::event_call_back, &client);
 
-    int res = client.run();
+    int res = client.connect();
     if (res != SUCCESS) {
-        res = client.run();
+        res = client.connect();
         if (res != SUCCESS) {
-            res = client.run();
+            res = client.connect();
             if (res != SUCCESS) {
                 return KCP_ERR_CONNECT_FAILED;
             }
