@@ -108,14 +108,17 @@ void connection_manager::stop() {
     std::cout << "kcp_stop start: " << std::endl;
     stopped_.store(true);
     connection_->stop();
+    for (auto iter = threads_.begin(); iter != threads_.end(); ++iter) {
+        if (iter->joinable())
+            iter->join();
+    }
     if (sockfd_ > 0) {
         ::close(sockfd_);
         sockfd_ = 0;
     }
-
-    for (auto iter = threads_.begin(); iter != threads_.end(); ++iter) {
-        if (iter->joinable())
-            iter->join();
+    if (epoll_fd_ > 0) {
+        ::close(epoll_fd_);
+        epoll_fd_ = 0;
     }
     std::cout << "kcp stopped." << std::endl;
 }
