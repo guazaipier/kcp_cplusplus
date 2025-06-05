@@ -1,9 +1,24 @@
-kcp_c++
-## server
-cd server && mkdir build && cd build && cmake.. && make -j4 && ./main
+# 架构
 
-## client
-cd client && mkdir build && cd build && cmake.. && make -j4 && ./main
+# 编译
+server：  
+cd server && mkdir build && cd build && cmake.. && make -j4  
+client：  
+cd client && mkdir build && cd build && cmake .. && make -j4  
+
+# 运行
+## 本地运行
+编译好之后，本地可以直接运行，先运行 server 端，再运行 client 端。
+## Docker 运行
+先编译好 server 和 client 的执行文件：  
+### 方式一 server 和 client 同时构建镜像并运行：
+在根目录下执行：
+docker-compose build && docker-compose up
+### 方式二 server 和 client 分别构建镜像后运行：
+在 server 目录下执行：
+cd server && docker-compose build && docker-compose up
+在 client 目录下执行：
+cd client && docker build -t kcp_client . && docker run --network host -it kcp_client
 
 ## 默认端口号：12345
 

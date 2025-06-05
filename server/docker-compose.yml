@@ -1,0 +1,18 @@
+version: '3'
+services:
+  kcp_server:
+    build: .
+    # 从 Dockerfile 当前目录中构建镜像
+    ports:
+      - "12345:12345/udp"
+      # 将容器的 12345 端口映射到主机的 12345 端口，默认 tcp
+    volumes:
+      - /opt/run:/opt/run
+    ulimits:
+      nofile:
+        soft: 20000
+        hard: 65536
+    labels:
+      - "kcp_server.description=kcp server"
+    restart: always
+    
