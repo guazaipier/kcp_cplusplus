@@ -1,4 +1,4 @@
-#include "include/connection_manager.hpp"
+#include "connection_manager.hpp"
 
 #include <iostream>
 #include <signal.h>
@@ -12,14 +12,6 @@ void signalManager();
 int main(int argc, char* argv[]) {
     signalManager();
     try {
-        // // cmd params
-        // if (argc != 3) {
-        //     std::cerr << "Usage: -port <port>" << std::endl;
-        //     return 1;
-        // }
-        
-        // int port = atoi(argv[2]);
-        
         std::shared_ptr<KCP::connection_manager> server(std::make_shared<KCP::connection_manager>(12345));
         if (!server->prepared()) { 
             std::cout << "server prepare failed." << std::endl; 
@@ -58,7 +50,7 @@ void signalHandler(int sig_num) {
 }
 
 void signalManager() {
-        // // 终端退出信号，通常由 Ctrl+\ 触发,用于调试或特殊退出
+    // 终端退出信号，通常由 Ctrl+\ 触发,用于调试或特殊退出
     signal(SIGQUIT, signalHandler);
     // 捕获 SIGINT 和 SIGTERM，用于优雅关闭 socket、保存状态、清理资源等。
     // 终端中断信号，通常由 Ctrl+C 触发。用于优雅退出。

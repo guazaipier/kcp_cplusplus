@@ -1,6 +1,7 @@
-#include "../include/connection_container.hpp"
-#include "../include/connection.hpp"
-
+#include "connection_container.hpp"
+#include "connection.hpp"
+#include "connection_manager.hpp"
+#include "logger.hpp"
 #include <iostream>
 
 namespace KCP
@@ -40,7 +41,7 @@ std::shared_ptr<connection> connection_container::addConnection(std::weak_ptr<co
     std::shared_ptr<connection> conn = connection::create(manager, conv, addr);
     if (conn) {
         connections_[conv] = conn;
-        std::cout << "add connection conv: " << conv << std::endl;
+        log_info("add connection conv: %d", conv);
     }
     return conn;
 }

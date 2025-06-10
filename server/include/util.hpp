@@ -17,7 +17,7 @@ const uint32_t IKCP_OVERHEAD{24};
 const uint32_t KCP_CONNECTION_TIMEOUT_DEADLINE{1000*60}; //10s
 
 const std::string KCP_CONNECT_PACKET("kcp_connection_packet");
-const uint32_t NOT_KCP_CONNECT_PACK{2^32-1};
+const uint32_t NOT_KCP_CONNECT_PACK{0};
 const std::string KCP_SEND_CONV_PACKET("kcp_connection_back_packet conv:");
 const std::string KCP_DISCONNECT_PACKET("kcp_disconnect_packet");
 

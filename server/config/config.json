@@ -1,0 +1,8 @@
+{
+    "log": {
+        "log_path": "/opt/run/kcp_server.log",
+        "max_size": 10485760,
+        "max_files": 5,
+        "log_level": 2
+    }
+}

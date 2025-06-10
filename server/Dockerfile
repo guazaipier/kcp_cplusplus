@@ -3,7 +3,8 @@ FROM ubuntu:24.04
 # 设置工作目录
 WORKDIR /opt/kcp_cplusplus
 # 复制头文件和main程序到工作目录
-COPY include/ .
+COPY config .
+COPY include .
 COPY build/main .
 # 暴露端口号
 EXPOSE 12345
@@ -12,7 +13,7 @@ EXPOSE 12345
 # 添加维护者信息
 # LABEL maintainer="guazaipier@github.com"
 # 启动命令
-CMD ["./main"]
+CMD ["./main", "config.json"]
 
 
 

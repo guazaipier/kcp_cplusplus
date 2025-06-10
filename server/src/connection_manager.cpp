@@ -1,4 +1,4 @@
-#include "../include/connection_manager.hpp"
+#include "connection_manager.hpp"
 
 // time & net files
 #include <chrono>
@@ -14,9 +14,12 @@
 #include <assert.h>
 #include <signal.h>
 
-#include "../include/ikcp.h"
-#include "../include/connection_container.hpp"
-#include "../include/connection.hpp"
+#include "ikcp.h"
+#include "logger.hpp"
+#include "connection_container.hpp"
+#include "connection.hpp"
+
+// Make sure the logger.hpp file contains the full definition of the Logger class, not just a forward declaration.
 
 namespace KCP {
 
@@ -28,7 +31,7 @@ void signalDisable() {
 }
 
 connection_manager::connection_manager(const int port) : connection_(std::make_unique<connection_container>()) {
-    std::cout << "port: " << port << std::endl;
+    log_info("listened on port: %d", port);
     initServer(port);
     if (!sockfd_) return;
 
@@ -54,7 +57,7 @@ connection_manager::~connection_manager() {
 }
 
 void connection_manager::run() {
-    std::cout << "kcp server start running..." << std::endl;
+    log_warn("kcp server start running...");
     struct sockaddr_in addr{};
     socklen_t addr_len = sizeof(addr);
     while (!stopped_) {
@@ -62,10 +65,10 @@ void connection_manager::run() {
         int nfds = epoll_wait(epoll_fd_, events, SOMAXCONN, 10);
         if (nfds == -1) {
             if (errno == EINTR) {
-                std::cout << "epoll_wait interrupted by signal" << std::endl; // gdb ctrl+c
+                log_warn("epoll_wait interrupted by signal"); // gdb ctrl+c
                 continue;
             } else {
-                std::cout << "epoll_wait error" << std::endl;
+                log_error("epoll_wait error: %d %s", errno, strerror(errno));
                 break;
             }
         } else if (nfds == 0) {
@@ -100,12 +103,12 @@ void connection_manager::run() {
     //         cv_.notify_one();
     //     }
     // }
-    std::cout << "run exit." << std::endl;
+    log_warn("kcp server stop running...");
 }
 
 // stop
 void connection_manager::stop() {
-    std::cout << "kcp_stop start: " << std::endl;
+    log_warn("kcp_stop start: ");
     stopped_.store(true);
     connection_->stop();
     for (auto iter = threads_.begin(); iter != threads_.end(); ++iter) {
@@ -120,12 +123,12 @@ void connection_manager::stop() {
         ::close(epoll_fd_);
         epoll_fd_ = 0;
     }
-    std::cout << "kcp stopped." << std::endl;
+    log_warn("kcp_stop end: ");
 }
 
 // timeout to disconnect client.
 void connection_manager::forceDisconnect(const uint32_t& conv) {
-    std::cout << "force disconnect: " << conv << std::endl;
+    log_warn("force disconnect: %d", conv);
 
     if (!connection_->findByConv(conv))
         return;
@@ -154,10 +157,10 @@ int connection_manager::send(const uint32_t& conv, std::shared_ptr<std::string> 
 void connection_manager::sendByUdp(const char* buf, int len, struct sockaddr_in& addr) {
     int ret = ::sendto(sockfd_, buf, len, 0, (struct sockaddr*)&addr, sizeof(addr));
     if (ret < 0) {
-        std::cout << "send failed with errno " << errno << " " << strerror(errno) << std::endl;
+        log_warn("send failed with errno %d %s", errno, strerror(errno));
         return;
     }
-    // std::cout << "send: " << buf << " len: " << len << " addr: " << inet_ntoa(addr.sin_addr) << ":" << ntohs(addr.sin_port) << std::endl;
+    log_debug("send: %s len: %d addr: %s:%d", buf, len, inet_ntoa(addr.sin_addr), ntohs(addr.sin_port));
 }
     
 void connection_manager::callCallBack(const uint32_t conv, eEventType event_type, std::shared_ptr<std::string> msg) {
@@ -166,7 +169,7 @@ void connection_manager::callCallBack(const uint32_t conv, eEventType event_type
 
 // 单独做一个线程，与::recv分开
 void connection_manager::recv() {
-    std::cout << "thread_recv start: " << std::this_thread::get_id() << std::endl;
+    log_warn("thread_recv start.");
 
     std::pair<std::string, struct sockaddr_in> recv_msg;
     while (!stopped_) {
@@ -184,11 +187,11 @@ void connection_manager::recv() {
         }
     }
     
-    std::cout << "thread_recv exit.";
+    log_warn("thread_recv end");
 }
 
 void connection_manager::update() {
-    std::cout << "thread_update start: " << std::this_thread::get_id() << std::endl;
+    log_warn("thread_update start.");
     while (!stopped_) {
         auto current = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count();
         cur_clock_.store(current);
@@ -196,7 +199,7 @@ void connection_manager::update() {
         std::this_thread::sleep_for(std::chrono::milliseconds(KCP_UPDATE_INTERVAL));
     }
     
-    std::cout << "thread_update exit.";
+    log_warn("thread_update end.");
 }
 
             
@@ -205,21 +208,20 @@ void connection_manager::processConnection(struct sockaddr_in* addr) {
     std::string send_back_msg = GenerateSendBackConvMsg(conv);
     int ret = ::sendto(sockfd_, send_back_msg.c_str(), send_back_msg.length(), 0, (struct sockaddr*)addr, sizeof(*addr));
     if (ret < 0) {
-        std::cout << "send failed with errno " << errno << " " << strerror(errno) << std::endl;
+        log_warn("send failed with errno %d %s", errno, strerror(errno));
         return;
     }
-    std::cout << "send: " << send_back_msg << " addr: " << inet_ntoa(addr->sin_addr)<< ":" << ntohs(addr->sin_port) << std::endl;
+    log_info("new connection from %s:%d", inet_ntoa(addr->sin_addr), ntohs(addr->sin_port));
     connection_->addConnection(shared_from_this(), conv, addr);
 }
 
 void connection_manager::processKcpMsg(const std::string& recv_msg) {
-    std::cout << "recv msg len: " << recv_msg.length() << " " << recv_msg.c_str() + IKCP_OVERHEAD << std::endl;
+    log_info("recv msg len: %d %s", recv_msg.length(), recv_msg.c_str() + IKCP_OVERHEAD);
     // ikcp_send_msg_check(recv_msg.c_str(), recv_msg.length());
     uint32_t conv = ikcp_getconv(recv_msg.c_str());
-    // std::cout << "get_conv: " << conv << std::endl;
     auto conn = connection_->findByConv(conv);
     if (!conn) {
-        std::cout <<  "connection not exist with conv: " << conv << std::endl;
+        log_warn("connection not exist with conv: %d %s", conv, recv_msg.c_str());
         return;
     }
 
@@ -231,7 +233,7 @@ void connection_manager::initServer(const int& port) {
     {
         sockfd_ = socket(AF_INET, SOCK_DGRAM, 0);
         if (sockfd_ <= 0) { 
-            std::cerr << "create socket failed with errno " << errno << " " << strerror(errno) << std::endl;
+            log_error("create socket failed with errno %d %s", errno, strerror(errno));
             return; 
         }
     }
@@ -239,13 +241,13 @@ void connection_manager::initServer(const int& port) {
     {
         int flags = fcntl(sockfd_, F_GETFL, 0);
         if (flags == -1) {
-            std::cerr << "get socket non-blocking: fcntl error return with errno: " << errno << " " << strerror(errno) << std::endl;
+            log_error("get socket flags failed with errno %d %s", errno, strerror(errno));
             ::close(sockfd_);
             sockfd_ = 0;
             return;
         }
         if(fcntl(sockfd_, F_SETFL, flags | O_NONBLOCK) == -1) {
-            std::cerr << "set socket non-blocking: fcntl error return with errno: " << errno << " " << strerror(errno) << std::endl;
+            log_error("set socket non-blocking: fcntl error return with errno %d %s", errno, strerror(errno));
             ::close(sockfd_);
             sockfd_ = 0;
             return;
@@ -255,13 +257,13 @@ void connection_manager::initServer(const int& port) {
     {
         int on = 1;
         if (::setsockopt(sockfd_, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on)) == -1) {
-            std::cerr << "set socket reuse addr failed with errno " << errno << " " << strerror(errno) << std::endl;
+            log_error("set socket reuse addr failed with errno %d %s", errno, strerror(errno));
             ::close(sockfd_);
             sockfd_ = 0;
             return;
         }
         if (::setsockopt(sockfd_, SOL_SOCKET, SO_REUSEPORT, &on, sizeof(on)) == -1) {
-            std::cerr << "set socket reuse port failed with errno " << errno << " " << strerror(errno) << std::endl;
+            log_error("set socket reuse port failed with errno %d %s", errno, strerror(errno));
             ::close(sockfd_);
             sockfd_ = 0;
             return;
@@ -274,7 +276,7 @@ void connection_manager::initServer(const int& port) {
         addr.sin_port = htons(port);
         addr.sin_addr.s_addr = htonl(INADDR_ANY);
         if (::bind(sockfd_, (struct sockaddr*)&addr,sizeof(addr)) == -1) {
-            std::cerr << "bind addr failed with errno " << errno << " " << strerror(errno) << std::endl;
+            log_error("bind addr failed with errno %d %s", errno, strerror(errno));
             ::close(sockfd_);
             sockfd_ = 0;
             return;
@@ -284,7 +286,7 @@ void connection_manager::initServer(const int& port) {
     {
         epoll_fd_ = epoll_create(1);
         if (epoll_fd_ == -1) {
-            std::cerr << "create epoll failed with errno " << errno << " " << strerror(errno) << std::endl;
+            log_error("create epoll failed with errno %d %s", errno, strerror(errno));
             ::close(sockfd_);
             sockfd_ = 0;
             return;
@@ -293,7 +295,7 @@ void connection_manager::initServer(const int& port) {
         event.events = EPOLLIN | EPOLLET;
         event.data.fd = sockfd_;
         if (::epoll_ctl(epoll_fd_, EPOLL_CTL_ADD, sockfd_, &event) == -1) {
-            std::cerr << "add epoll failed with errno " << errno << " " << strerror(errno) << std::endl;
+            log_error("add epoll failed with errno %d %s", errno, strerror(errno));
             ::close(sockfd_);
             sockfd_ = 0;
         }
